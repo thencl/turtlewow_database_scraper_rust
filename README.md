@@ -6,11 +6,34 @@ NPC / object page, and stores the result in a local SQLite file.
 
 ## Files in this folder (read in this order)
 
-1. **[INIT.md](INIT.md)** — the prompt to paste into your Copilot / Opus / GPT‑5.5 chat.
-2. **[SKILLS.md](SKILLS.md)** — the skill list the agent must already know.
-3. **[API_REFERENCE.md](API_REFERENCE.md)** — endpoint URLs, CSS selectors, rate limits.
-4. **[MASTER_PLAN.md](MASTER_PLAN.md)** — 14 numbered steps with the **complete** source for every file.
-5. **README.md** — this file.
+### Agent bootstrap (start here)
+
+1. **[AGENT_DIRECTIVE.md](AGENT_DIRECTIVE.md)** — mandatory rules every agent/AI must read before taking any action.
+2. **[INIT.md](INIT.md)** — the prompt to paste into your Copilot / Opus / GPT-5.5 chat to kick off the build.
+3. **[SKILLS.md](SKILLS.md)** — the crate/framework knowledge the agent must possess (pinned versions).
+4. **[system_prompt.md](system_prompt.md)** — project-wide system-level instructions loaded at every agent session.
+5. **[coding_agent_prompt.md](coding_agent_prompt.md)** — standard prompt for implementation / refactoring agent sessions.
+
+### Planning & architecture
+
+6. **[MASTER_PLAN.md](MASTER_PLAN.md)** — 14 numbered steps with the **complete** source for every file.
+7. **[plan.prompt.md](plan.prompt.md)** — prompt template for producing detailed implementation plans or handover docs.
+8. **[architecture.md](architecture.md)** — system architecture decisions; update whenever a significant decision is made.
+9. **[requirements.md](requirements.md)** — all functional and non-functional requirements; source of truth for scope.
+10. **[feature_file_correlations.md](feature_file_correlations.md)** — maps every feature area to the source files that implement it.
+
+### Reference
+
+11. **[API_REFERENCE.md](API_REFERENCE.md)** — endpoint URLs, CSS selectors, rate limits, Cloudflare handling.
+12. **[security.md](security.md)** — security requirements, standards, and review checklist.
+13. **[accessibility.md](accessibility.md)** — accessibility standards and audit process for the UI.
+14. **[testing.md](testing.md)** — testing strategy, tooling, and acceptance criteria.
+
+### Tracking
+
+15. **[CHANGELOG.md](CHANGELOG.md)** — append-only record of all project changes.
+16. **[checklist.md](checklist.md)** — mandatory quality-gate checklists (pre-commit, pre-release, etc.).
+17. **README.md** — this file.
 
 ## What the agent will produce
 

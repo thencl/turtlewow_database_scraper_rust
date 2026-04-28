@@ -1540,6 +1540,10 @@ New commands required by the premium UI. **Append** these to `src-tauri/src/db.r
 
 #### 14.0.0 — Anti-Bot Headers & Isolated Builds
 
+**IMPLEMENTED**: JSON/CSV/SQL/SQLite .db import and export and converting
+
+**CRITICAL TODO**: A dedicated converter function (direct format transformation) is **NOT YET IMPLEMENTED**. Users can export any format and import any format, but converting between formats without re-scraping (e.g., JSON→CSV in-app) requires a new `pub fn convert(from_format: &str, to_format: &str, data: &[u8]) → Result<Vec<u8>>` function in `db.rs`.
+
 To prevent CloudFlare, Google, and other WAF services from blocking the scraper, **update `scraper.rs`** with:
 
 1. **Rotating User-Agent Headers**: Six real browser UA strings (Chrome 126, Firefox 126, Mac Safari, Linux Chrome) rotate randomly per request to avoid bot fingerprinting.
@@ -2092,223 +2096,180 @@ fn sql_escape(s: &str) -> String {
 
 #### 14.0.4 — `scraper.rs` enhancements (anti-bot headers)
 
-Append to the bottom of `turtle-scraper/src-tauri/src/scraper.rs`:
+Update the top of `turtle-scraper/src-tauri/src/scraper.rs` file header and `build_client()` function to add rotating User-Agent headers and browser fingerprinting:
 
+**Update imports** (add to the imports section):
 ```rust
-/// Run a targeted scrape for only the given (kind, entry) pairs.
-/// Used for "scrape missing / gaps" mode.
-pub async fn run_targeted(
-    app: AppHandle,
-    engine: Arc<Engine>,
-    db: Arc<Db>,
-    gaps: Vec<crate::types::GapEntry>,
-    cfg: ScrapeConfig,
-) -> Result<()> {
-    if engine.running.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Err(anyhow!("already running"));
-    }
-    engine.cancel.store(false, Ordering::Relaxed);
-    engine.paused.store(false, Ordering::Relaxed);
-    engine.challenge.store(false, Ordering::Relaxed);
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CACHE_CONTROL, REFERER, USER_AGENT};
+```
 
-    let concurrency = cfg.concurrency.min(HARD_CONCURRENCY_CAP).max(1);
-    let rate_per_sec = cfg.rate_per_sec.min(HARD_RATE_CAP).max(1);
-    let limiter = build_limiter(rate_per_sec);
-    let sem = Arc::new(Semaphore::new(concurrency as usize));
-    let client = build_client()?;
+**Add rotating User-Agent list** (before `pub struct Engine`):
+```rust
+// Rotating User-Agents (legitimate browsers, not bots)
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+];
 
-    let total_queued = gaps.len() as u64;
-    let done = Arc::new(AtomicU64::new(0));
-    let found = Arc::new(AtomicU64::new(0));
-    let skipped = Arc::new(AtomicU64::new(0));
-    let errors = Arc::new(AtomicU64::new(0));
-    let started = Instant::now();
-    let mut futs = FuturesUnordered::new();
-
-    for gap in gaps {
-        if engine.cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let kind_val = match gap.kind.as_str() {
-            "item" => Kind::Item,
-            "spell" => Kind::Spell,
-            "quest" => Kind::Quest,
-            "npc" => Kind::Npc,
-            _ => Kind::Object,
-        };
-        let id = gap.entry;
-        let permit = sem.clone().acquire_owned().await.unwrap();
-        let (client, limiter, db, app, engine) = (
-            client.clone(), limiter.clone(), db.clone(), app.clone(), engine.clone(),
-        );
-        let (done, found, skipped, errors) = (
-            done.clone(), found.clone(), skipped.clone(), errors.clone(),
-        );
-        futs.push(tokio::spawn(async move {
-            let _permit = permit;
-            let url = kind_val.url(id);
-            match fetch_with_retry(&client, &limiter, &url, &engine).await {
-                Ok((200, body, _)) => match parse(kind_val, id, &body) {
-                    Ok(ParseOutcome::Ok(rec)) => {
-                        if db.upsert(&rec).is_ok() { found.fetch_add(1, Ordering::Relaxed); }
-                        else { errors.fetch_add(1, Ordering::Relaxed); }
-                    }
-                    Ok(ParseOutcome::NotFound) => {
-                        db.mark_skipped(kind_val, id, "not-found").ok();
-                        skipped.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(_) => { errors.fetch_add(1, Ordering::Relaxed); }
-                },
-                Ok((status, _, _)) => {
-                    db.mark_skipped(kind_val, id, &format!("http-{status}")).ok();
-                    skipped.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(_) => { errors.fetch_add(1, Ordering::Relaxed); }
-            }
-            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-            let rps = d as f64 / started.elapsed().as_secs_f64().max(0.001);
-            let _ = app.emit("progress", crate::types::Progress {
-                kind: kind_val.as_str().into(),
-                queued: total_queued,
-                done: d,
-                found: found.load(Ordering::Relaxed),
-                skipped: skipped.load(Ordering::Relaxed),
-                errors: errors.load(Ordering::Relaxed),
-                current_id: id,
-                req_per_sec: rps,
-                state: if engine.cancel.load(Ordering::Relaxed) { "cancelled" }
-                       else if engine.challenge.load(Ordering::Relaxed) { "challenge" }
-                       else if engine.paused.load(Ordering::Relaxed) { "paused" }
-                       else { "running" },
-            });
-        }));
-        while futs.len() >= concurrency as usize * 4 {
-            if futs.next().await.is_none() { break; }
-        }
-    }
-    while futs.next().await.is_some() {}
-    let final_state = if engine.cancel.load(Ordering::Relaxed) { "cancelled" } else { "done" };
-    let _ = app.emit("progress", crate::types::Progress {
-        kind: "all".into(),
-        queued: total_queued,
-        done: done.load(Ordering::Relaxed),
-        found: found.load(Ordering::Relaxed),
-        skipped: skipped.load(Ordering::Relaxed),
-        errors: errors.load(Ordering::Relaxed),
-        current_id: 0,
-        req_per_sec: 0.0,
-        state: final_state,
-    });
-    engine.running.store(false, std::sync::atomic::Ordering::SeqCst);
-    Ok(())
+fn get_random_user_agent() -> &'static str {
+    let mut rng = rand::thread_rng();
+    USER_AGENTS[rng.gen_range(0..USER_AGENTS.len())]
 }
 ```
 
-#### 14.0.5 — `lib.rs` additions (import/export commands)
+**Replace `fn build_client()` entirely** with:
+```rust
+fn build_client() -> Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    // Rotate User-Agent to avoid detection
+    headers.insert(USER_AGENT, HeaderValue::from_static(get_random_user_agent()));
+    // Standard browser Accept headers
+    headers.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"));
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+    // Cache-Control prevents old cached content
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache, max-age=0"));
+    // Referrer (normal browser behavior)
+    headers.insert(REFERER, HeaderValue::from_static("https://database.turtlecraft.gg/"));
+    // Sec-Fetch headers (modern browser signature)
+    headers.insert("sec-fetch-dest", HeaderValue::from_static("document"));
+    headers.insert("sec-fetch-mode", HeaderValue::from_static("navigate"));
+    headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+    headers.insert("sec-ch-ua", HeaderValue::from_static("\"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\", \"Not=A?Brand\";v=\"24\""));
+    // DNT (Do Not Track)
+    headers.insert("dnt", HeaderValue::from_static("1"));
+    
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .cookie_store(true)
+        .gzip(true)
+        .brotli(true)
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(10))
+        .build()?)
+}
+```
 
-Replace the full contents of `turtle-scraper/src-tauri/src/lib.rs` with:
+**Benefits**:
+- Rotating User-Agents prevent bot detection from pattern-matching single UA strings
+- Browser fingerprinting headers (Sec-Fetch-*, Sec-CH-UA) mimic real Chrome/Firefox/Safari signatures
+- Accept-Encoding, Cache-Control, DNT headers match legitimate user behavior
+- Cookie store persists session cookies like real browsers
+- Prevents CloudFlare challenge blocks and Google WAF detection
+
+#### 14.0.5 — `.cargo/config.toml` (isolated builds)
+
+Create `turtle-scraper/.cargo/config.toml` to isolate builds from other projects:
+
+```toml
+# Cargo config for isolated, airtight builds
+# Prevents this project's artifacts from contaminating other projects
+# and vice versa.
+
+[build]
+# Use a local target directory within this project
+# rather than the global ~/.cargo or a parent directory
+target-dir = "src-tauri/target"
+
+# Parallel jobs to prevent OOM on mid-range systems
+jobs = 2
+
+[term]
+# Verbose output for debugging
+verbose = false
+color = "auto"
+
+# Environment isolation
+[env]
+RUST_BACKTRACE = "1"
+RUST_LOG = "info,turtle_scraper_lib=debug"
+# Prevent incremental compilation conflicts across projects
+CARGO_INCREMENTAL = "0"
+```
+
+**Benefits**:
+- Build artifacts stay in `src-tauri/target/`, never in `~/.cargo` or parent directories
+- Prevents version conflicts with other Rust projects
+- Jobs limited to 2 prevents OOM on mid-range systems
+- Environment variables isolated per-project
+
+#### 14.0.6 — `lib.rs` additions (import/export commands)
+
+Add these three new Tauri command handlers to `turtle-scraper/src-tauri/src/lib.rs` (in the Import section, right after `import_json`):
 
 ```rust
-//! Tauri entry. Exposes all commands the frontend calls via invoke().
-
-mod db;
-mod parser;
-mod rate;
-mod scraper;
-mod types;
-
-use std::path::PathBuf;
-use std::sync::Arc;
-use tauri::{Manager, State};
-use tracing_subscriber::EnvFilter;
-
-use crate::db::Db;
-use crate::scraper::Engine;
-use crate::types::{GapEntry, Record, RichStats, ScrapeConfig, ScrapeProfile};
-
-pub struct AppState {
-    pub db: Arc<Db>,
-    pub engine: Arc<Engine>,
-}
-
-fn db_path(app: &tauri::AppHandle) -> PathBuf {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
-    std::fs::create_dir_all(&dir).ok();
-    dir.join("turtle.db")
-}
-
-// ── Scrape control ────────────────────────────────────────────────────────────
-
 #[tauri::command]
-async fn start_scrape(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    cfg: ScrapeConfig,
-) -> Result<(), String> {
-    let engine = state.engine.clone();
-    let db = state.db.clone();
-    tokio::spawn(async move {
-        if let Err(e) = scraper::run(app, engine, db, cfg).await {
-            tracing::error!("scrape failed: {e}");
-        }
-    });
-    Ok(())
+fn import_csv(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let (inserted, updated, skipped) = state.db.import_csv(&bytes).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
 }
 
 #[tauri::command]
-async fn start_targeted_scrape(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    gaps: Vec<GapEntry>,
-    cfg: ScrapeConfig,
-) -> Result<(), String> {
-    let engine = state.engine.clone();
-    let db = state.db.clone();
-    tokio::spawn(async move {
-        if let Err(e) = scraper::run_targeted(app, engine, db, gaps, cfg).await {
-            tracing::error!("targeted scrape failed: {e}");
-        }
-    });
-    Ok(())
+fn import_sql(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let (inserted, updated, skipped) = state.db.import_sql(&bytes).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
 }
 
 #[tauri::command]
-fn pause_scrape(state: State<'_, AppState>) {
-    state.engine.paused.store(true, std::sync::atomic::Ordering::Relaxed);
+fn import_db(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let (inserted, updated, skipped) = state.db.import_db(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
 }
+```
 
-#[tauri::command]
-fn resume_scrape(state: State<'_, AppState>) {
-    state.engine.paused.store(false, std::sync::atomic::Ordering::Relaxed);
-    state.engine.challenge.store(false, std::sync::atomic::Ordering::Relaxed);
-}
+Then update the `generate_handler!` macro to include these three new commands:
 
-#[tauri::command]
-fn cancel_scrape(state: State<'_, AppState>) {
-    state.engine.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-}
+```rust
+.invoke_handler(tauri::generate_handler![
+    start_scrape,
+    start_targeted_scrape,
+    pause_scrape,
+    resume_scrape,
+    cancel_scrape,
+    engine_state,
+    db_stats,
+    rich_stats,
+    search,
+    get_record,
+    gap_ids,
+    clear_skipped,
+    export_json,
+    export_csv,
+    export_sql,
+    import_json,
+    import_csv,        // ← NEW
+    import_sql,        // ← NEW
+    import_db,         // ← NEW
+    save_profile,
+    load_profiles,
+    delete_profile,
+])
+```
 
-#[tauri::command]
-fn engine_state(state: State<'_, AppState>) -> serde_json::Value {
-    use std::sync::atomic::Ordering;
-    serde_json::json!({
-        "running": state.engine.running.load(Ordering::Relaxed),
-        "paused":  state.engine.paused.load(Ordering::Relaxed),
-        "challenge": state.engine.challenge.load(Ordering::Relaxed),
-    })
-}
+✅ Verify: `cargo check --manifest-path src-tauri/Cargo.toml` — zero errors, all three new commands compile.
 
-// ── Database queries ──────────────────────────────────────────────────────────
+---
 
-#[tauri::command]
-fn db_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let total = state.db.count(None).map_err(|e| e.to_string())?;
-    let mut by_kind = serde_json::Map::new();
-    for k in types::Kind::all() {
-        let n = state.db.count(Some(k)).map_err(|e| e.to_string())?;
+### 14.1 — Replace `turtle-scraper/index.html`
+
+```html
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turtle Scraper</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!-- ── Top bar ─────────────────────────────────────── -->
+    <header id="topbar">
         by_kind.insert(k.as_str().to_string(), serde_json::json!(n));
     }
     Ok(serde_json::json!({
@@ -3660,6 +3621,10 @@ refreshDbPill();
 ---
 
 ### 14.4 — Update capabilities + UI for multi-format import/export + anti-bot headers
+
+**Implemented Features**: JSON/CSV/SQL/SQLite .db import and export and converting
+
+**Note**: Export and import of all 4 formats are fully wired. Direct format conversion (without re-importing) is NOT implemented. See §14.0.0 TODO.
 
 #### 14.4.1 — Capabilities for file I/O
 

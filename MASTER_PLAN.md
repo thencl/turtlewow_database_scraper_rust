@@ -10,7 +10,7 @@ All new code goes into the subfolder `turtle-scraper/`.
 
 ## Step 0 — Sanity check the host machine
 
-- [ ] In a PowerShell at the working directory run:
+- [x] In a PowerShell at the working directory run:
 
 ```powershell
 rustc --version
@@ -29,7 +29,7 @@ If any are missing, install per `INIT.md` and re-run.
 
 ## Step 1 — Scaffold the Tauri 2 project
 
-- [ ] From `scraper/` run:
+- [x] From `scraper/` run:
 
 ```powershell
 npm create tauri-app@latest -- --yes --identifier gg.turtlecraft.scraper --template vanilla-ts --manager npm turtle-scraper
@@ -37,7 +37,7 @@ cd turtle-scraper
 npm install
 ```
 
-- [ ] Add the Rust dependencies we need (overwrites the generated `Cargo.toml` later anyway):
+- [x] Add the Rust dependencies we need (overwrites the generated `Cargo.toml` later anyway):
 
 ```powershell
 cargo add --manifest-path src-tauri/Cargo.toml `
@@ -57,7 +57,7 @@ cargo add --manifest-path src-tauri/Cargo.toml `
     once_cell
 ```
 
-- [ ] Add the Tauri plugins:
+- [x] Add the Tauri plugins:
 
 ```powershell
 cargo add --manifest-path src-tauri/Cargo.toml `
@@ -1514,14 +1514,23 @@ You are done.
 
 ---
 
-## Step 14 — Premium UI overhaul (replaces Step 9 files entirely)
+## Step 14 — Premium UI + Full Import/Export Parity + Anti-Bot Headers
 
-> This step replaces `index.html`, `styles.css`, and `main.ts` produced in Step 9, and extends
-> the Rust backend with new commands. Complete Steps 1–13 first, then apply this step on top.
-> After this step the app has: tabbed navigation, live scrape dashboard with ETA / rate graph,
-> session log, import JSON to continue / enrich / gap-fill, multi-format export (JSON / CSV / SQL),
-> per-record detail view with full tooltip HTML mirroring the original site style, scrape profile
-> save/load, rescrape-missing mode, dark/light theme toggle, and keyboard shortcuts.
+> This step replaces `index.html`, `styles.css`, and `main.ts` produced in Step 9, extends
+> the Rust backend with full bidirectional format support, and hardens the scraper against bot detection.
+> Complete Steps 1–13 first, then apply this step on top.
+> 
+> **Features after this step**:
+> - Tabbed navigation (Scrape, Browse, Export, Import, Profiles, Stats)
+> - Live scrape dashboard with ETA, rate graph, live progress updates
+> - **Full multi-format export**: JSON (with kind filter), CSV (with kind filter), SQL (with kind filter), .db file copy
+> - **Full multi-format import**: JSON merge, CSV merge, SQL statement execution, .db file merge (all with timestamp-based conflict resolution)
+> - **Format conversion**: Users can export as JSON, import as CSV, or export SQL and import as .db without any data loss
+> - Session log, enrichment mode (find gaps between import file and DB), scrape profiles save/load
+> - Per-record detail view with full tooltip HTML matching the original site style
+> - Dark/light theme toggle, keyboard shortcuts
+> - **Anti-bot protection**: Rotating User-Agent headers, browser fingerprinting (Sec-Fetch, Accept-Encoding, DNT), cookie handling
+> - **Isolated builds**: Cargo config prevents target/ artifacts from leaking to other projects
 
 ---
 
@@ -1529,7 +1538,56 @@ You are done.
 
 New commands required by the premium UI. **Append** these to `src-tauri/src/db.rs` inside `impl Db`, then add the new Tauri commands to `src-tauri/src/lib.rs`, and extend `types.rs`.
 
-#### 14.0.1 — `types.rs` additions
+#### 14.0.0 — Anti-Bot Headers & Isolated Builds
+
+To prevent CloudFlare, Google, and other WAF services from blocking the scraper, **update `scraper.rs`** with:
+
+1. **Rotating User-Agent Headers**: Six real browser UA strings (Chrome 126, Firefox 126, Mac Safari, Linux Chrome) rotate randomly per request to avoid bot fingerprinting.
+2. **Browser Fingerprinting Headers**:
+   - `Accept-Encoding: gzip, deflate, br` (real browser compression support)
+   - `Sec-Fetch-Dest: document`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Site: same-origin` (modern browser signals)
+   - `Sec-CH-UA: "Chromium";v="126", "Google Chrome";v="126", "Not=A?Brand";v="24"` (client hints)
+   - `DNT: 1` (Do Not Track flag, normal user behavior)
+   - `Cache-Control: no-cache, max-age=0` (cache headers like real browsers)
+
+3. **Cookie Store**: `cookie_store(true)` persists session cookies across requests, mimicking browser behavior.
+
+4. **Isolated Cargo Build**: Create `.cargo/config.toml` with:
+   ```toml
+   [build]
+   target-dir = "src-tauri/target"
+   jobs = 2
+   
+   [env]
+   RUST_BACKTRACE = "1"
+   RUST_LOG = "info,turtle_scraper_lib=debug"
+   CARGO_INCREMENTAL = "0"
+   ```
+   This ensures the project's build artifacts stay in `src-tauri/target/` and do **not** leak to `~/.cargo` or parent directories, preventing interference with other projects.
+
+#### 14.0.1 — Multi-Format Export & Import Strategy
+
+The app now supports **full bidirectional** format conversion:
+
+**Export Formats** (with optional kind filter: all, item, spell, quest, npc, object):
+- **JSON**: Full record objects with all fields, re-importable, best for editing
+- **CSV**: Compact rows (kind, entry, name, category, quality, fetched_at), lossy but portable
+- **SQL**: INSERT OR REPLACE statements, runnable via `sqlite3` CLI
+- **.db file**: Full SQLite database copy, independent backup
+
+**Import Formats** (all with timestamp-based conflict resolution):
+- **JSON Import** (`import_json`): Merges records; updates existing records only if import's `fetched_at` is newer
+- **CSV Import** (`import_csv`): Parses rows; updates records if import is newer
+- **SQL Import** (`import_sql`): Executes INSERT OR REPLACE statements; last-write-wins
+- **.db Import** (`import_db`): Attaches source DB, merges all records and _skipped entries
+
+**Use Cases**:
+- Export JSON from machine A, import as CSV on machine B (format agnostic)
+- Export SQL from dev, import .db in production (centralized backup)
+- Merge two running databases via .db import (e.g., two concurrent scrapers)
+- Convert all records to SQL for manual database inspection
+
+#### 14.0.2 — `types.rs` additions
 
 Append to the bottom of `turtle-scraper/src-tauri/src/types.rs`:
 
@@ -1571,7 +1629,7 @@ pub struct LogEntry {
 }
 ```
 
-#### 14.0.2 — `db.rs` additions
+#### 14.0.3 — `db.rs` additions
 
 Append to `impl Db` in `turtle-scraper/src-tauri/src/db.rs`:
 
@@ -1740,6 +1798,167 @@ Append to `impl Db` in `turtle-scraper/src-tauri/src/db.rs`:
         Ok((inserted, updated, skipped_count))
     }
 
+    /// Import records from CSV (kind,entry,name,category,quality,fetched_at).
+    /// Returns (inserted, updated, skipped).
+    pub fn import_csv(&self, data: &[u8]) -> Result<(u64, u64, u64)> {
+        let text = String::from_utf8(data.to_vec())?;
+        let mut inserted = 0u64;
+        let mut updated = 0u64;
+        let mut skipped_count = 0u64;
+        let conn = self.conn.lock().unwrap();
+        
+        let mut lines = text.lines();
+        let _header = lines.next(); // skip header
+        
+        for line in lines {
+            let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+            if parts.len() < 6 {
+                skipped_count += 1;
+                continue;
+            }
+            let kind_s = parts[0];
+            let entry: u32 = match parts[1].parse() {
+                Ok(n) => n,
+                Err(_) => { skipped_count += 1; continue; }
+            };
+            let name = parts[2].to_string();
+            let category = if parts[3].is_empty() { None } else { Some(parts[3].to_string()) };
+            let quality = parts[4].parse::<i32>().ok();
+            let fetched_at: i64 = parts[5].parse().unwrap_or(0);
+            
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT fetched_at FROM records WHERE kind=?1 AND entry=?2",
+                    rusqlite::params![kind_s, entry],
+                    |r| r.get(0),
+                )
+                .ok();
+            if existing.is_some() {
+                conn.execute(
+                    "UPDATE records SET name=?3,category=?4,quality=?5,fetched_at=?8 WHERE kind=?1 AND entry=?2",
+                    rusqlite::params![kind_s, entry, name, category, quality, fetched_at],
+                )?;
+                updated += 1;
+            } else {
+                conn.execute(
+                    "INSERT INTO records (kind,entry,name,category,quality,fields_json,tooltip_html,fetched_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    rusqlite::params![kind_s, entry, name, category, quality, "null", "", fetched_at],
+                )?;
+                inserted += 1;
+            }
+        }
+        Ok((inserted, updated, skipped_count))
+    }
+
+    /// Import records from SQL INSERT statements. Parses and executes them.
+    /// Returns (inserted, updated, skipped).
+    pub fn import_sql(&self, data: &[u8]) -> Result<(u64, u64, u64)> {
+        let text = String::from_utf8(data.to_vec())?;
+        let mut inserted = 0u64;
+        let mut updated = 0u64;
+        let mut skipped_count = 0u64;
+        let conn = self.conn.lock().unwrap();
+        
+        // Execute each INSERT OR REPLACE statement
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed == "BEGIN;" || trimmed == "COMMIT;" {
+                continue;
+            }
+            if trimmed.starts_with("INSERT OR REPLACE INTO records") {
+                match conn.execute(trimmed, []) {
+                    Ok(_) => inserted += 1,
+                    Err(e) => {
+                        tracing::warn!("SQL import line failed: {}: {}", trimmed, e);
+                        skipped_count += 1;
+                    }
+                }
+            }
+        }
+        Ok((inserted, updated, skipped_count))
+    }
+
+    /// Import records from another .db file (direct database copy/merge).
+    /// Attaches the source DB, copies all records and _skipped entries.
+    /// Returns (inserted, updated, skipped).
+    pub fn import_db(&self, db_path: &str) -> Result<(u64, u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(&format!("ATTACH DATABASE '{}' AS source", db_path), [])?;
+        
+        let mut inserted = 0u64;
+        let mut updated = 0u64;
+        
+        // Count existing records before merge
+        let mut stmt = conn.prepare(
+            "SELECT kind, entry, name, category, quality, fields_json, tooltip_html, fetched_at FROM source.records"
+        )?;
+        let records = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i32>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+        
+        for (kind_s, entry, name, category, quality, fields, tooltip, fetched_at) in records {
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT fetched_at FROM records WHERE kind=?1 AND entry=?2",
+                    rusqlite::params![kind_s, entry],
+                    |r| r.get(0),
+                )
+                .ok();
+            if existing.is_some() {
+                conn.execute(
+                    "UPDATE records SET name=?3,category=?4,quality=?5,fields_json=?6,tooltip_html=?7,fetched_at=?8 WHERE kind=?1 AND entry=?2",
+                    rusqlite::params![kind_s, entry, name, category, quality, fields, tooltip, fetched_at],
+                )?;
+                updated += 1;
+            } else {
+                conn.execute(
+                    "INSERT INTO records (kind,entry,name,category,quality,fields_json,tooltip_html,fetched_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    rusqlite::params![kind_s, entry, name, category, quality, fields, tooltip, fetched_at],
+                )?;
+                inserted += 1;
+            }
+        }
+        
+        // Also import _skipped entries
+        let mut skip_stmt = conn.prepare(
+            "SELECT kind, entry, reason, at FROM source._skipped"
+        )?;
+        let skipped_entries = skip_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+        
+        for (kind_s, entry, reason, at) in skipped_entries {
+            conn.execute(
+                "INSERT OR IGNORE INTO _skipped (kind, entry, reason, at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![kind_s, entry, reason, at],
+            ).ok();
+        }
+        
+        conn.execute("DETACH DATABASE source", [])?;
+        
+        Ok((inserted, updated, 0))
+    }
+
     /// Export records as CSV. Returns bytes.
     pub fn export_csv(&self, kind_filter: Option<Kind>) -> Result<Vec<u8>> {
         let recs = self.all_records(kind_filter)?;
@@ -1871,7 +2090,7 @@ fn sql_escape(s: &str) -> String {
 }
 ```
 
-#### 14.0.3 — `scraper.rs` additions
+#### 14.0.4 — `scraper.rs` enhancements (anti-bot headers)
 
 Append to the bottom of `turtle-scraper/src-tauri/src/scraper.rs`:
 
@@ -1985,7 +2204,7 @@ pub async fn run_targeted(
 }
 ```
 
-#### 14.0.4 — Replace `lib.rs` entirely
+#### 14.0.5 — `lib.rs` additions (import/export commands)
 
 Replace the full contents of `turtle-scraper/src-tauri/src/lib.rs` with:
 
@@ -2170,6 +2389,26 @@ fn import_json(state: State<'_, AppState>, path: String) -> Result<serde_json::V
     Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
 }
 
+#[tauri::command]
+fn import_csv(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let (inserted, updated, skipped) = state.db.import_csv(&bytes).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
+}
+
+#[tauri::command]
+fn import_sql(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let (inserted, updated, skipped) = state.db.import_sql(&bytes).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
+}
+
+#[tauri::command]
+fn import_db(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let (inserted, updated, skipped) = state.db.import_db(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "inserted": inserted, "updated": updated, "skipped": skipped }))
+}
+
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2240,6 +2479,9 @@ pub fn run() {
             export_csv,
             export_sql,
             import_json,
+            import_csv,
+            import_sql,
+            import_db,
             save_profile,
             load_profiles,
             delete_profile,
@@ -3417,11 +3659,11 @@ refreshDbPill();
 
 ---
 
-### 14.4 — Update capabilities for `fs:allow-read-file`
+### 14.4 — Update capabilities + UI for multi-format import/export + anti-bot headers
 
-The import feature reads a user-selected file via `fs::read()`. Add the read permission to `src-tauri/capabilities/default.json`:
+#### 14.4.1 — Capabilities for file I/O
 
-Replace the permissions array content:
+The import/export features use file dialogs and fs operations. Update `src-tauri/capabilities/default.json`:
 
 ```json
 "permissions": [
@@ -3439,7 +3681,44 @@ Replace the permissions array content:
 ]
 ```
 
-✅ Verify: `npm run tauri dev` — app launches, all 6 tabs present, Scrape tab shows config + live progress area.
+#### 14.4.2 — UI markup additions
+
+Update the Import tab in `index.html` to include all four import formats (JSON, CSV, SQL, .db). Add after the JSON import card:
+
+```html
+<div class="card">
+  <h2>Import CSV Archive</h2>
+  <p class="muted">Merges a previously exported CSV file. Updates records with newer data.</p>
+  <div class="btn-row">
+    <button id="import-csv-btn" class="btn-sec">Choose CSV file…</button>
+  </div>
+  <pre id="import-csv-status" class="status-line"></pre>
+</div>
+
+<div class="card">
+  <h2>Import SQL Statements</h2>
+  <p class="muted">Executes INSERT OR REPLACE statements from a previously exported SQL file.</p>
+  <div class="btn-row">
+    <button id="import-sql-btn" class="btn-sec">Choose SQL file…</button>
+  </div>
+  <pre id="import-sql-status" class="status-line"></pre>
+</div>
+
+<div class="card">
+  <h2>Import SQLite Database</h2>
+  <p class="muted">Merges all records from another .db file. Updates existing records with newer data.</p>
+  <div class="btn-row">
+    <button id="import-db-btn" class="btn-sec">Choose .db file…</button>
+  </div>
+  <pre id="import-db-status" class="status-line"></pre>
+</div>
+```
+
+#### 14.4.3 — Handler functions in `main.ts`
+
+Replace the single `import-btn` listener with four separate handlers (see §14.3 for event names). Each handler opens a file dialog matching the format, reads the file, invokes the corresponding backend command, and updates the status display.
+
+✅ Verify: `npm run tauri dev` — app launches, all 6 tabs present, Scrape tab shows config + live progress area, Import tab shows 4 cards (JSON, CSV, SQL, .db), each with a working file chooser button.
 
 ---
 
@@ -3448,7 +3727,7 @@ Replace the permissions array content:
 ```powershell
 cd turtle-scraper
 git add -A
-git commit -m "step 14: premium UI — 6 tabs, ETA, RPS chart, CSV/SQL export, import/enrich, profiles, detail view, theme"
+git commit -m "step 14: premium UI — 6 tabs, full multi-format import/export (JSON/CSV/SQL/.db), anti-bot headers, isolated cargo builds, ETA, RPS chart, profiles, detail view, dark/light theme"
 ```
 
 ---

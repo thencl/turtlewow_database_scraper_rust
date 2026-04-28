@@ -9,7 +9,7 @@ NPC / object page, and stores the result in a local SQLite file.
 1. **[INIT.md](INIT.md)** — the prompt to paste into your Copilot / Opus / GPT‑5.5 chat.
 2. **[SKILLS.md](SKILLS.md)** — the skill list the agent must already know.
 3. **[API_REFERENCE.md](API_REFERENCE.md)** — endpoint URLs, CSS selectors, rate limits.
-4. **[MASTER_PLAN.md](MASTER_PLAN.md)** — 13 numbered steps with the **complete** source for every file.
+4. **[MASTER_PLAN.md](MASTER_PLAN.md)** — 14 numbered steps with the **complete** source for every file.
 5. **README.md** — this file.
 
 ## What the agent will produce
@@ -51,6 +51,19 @@ scraper/
 
 No Python, no Go, no Docker, no cloud. One `.exe` ships everything.
 
+## App features (Step 14 premium UI)
+
+| Tab | What it does |
+|---|---|
+| **Scrape** | Configure kinds, ID range, concurrency, rate; Start / Pause / Resume / Cancel; live progress bar + 8-stat grid (done, found, skipped, errors, req/s, ETA, elapsed, current ID); animated RPS sparkline; session log; Cloudflare challenge banner |
+| **Browse** | Search by name, filter by kind, look up exact ID; results grid with quality colours; detail panel showing every structured field + original tooltip HTML |
+| **Export** | JSON (re-importable) · CSV · SQL INSERT statements · raw `.db` file copy — all filterable by kind |
+| **Import** | Merge a previously exported JSON archive; "Find gaps" scanner to detect missing IDs; one-click "Scrape missing now" targeted run |
+| **Profiles** | Save / load / delete named scrape configurations |
+| **Stats** | Total record count, per-kind bar chart, skipped counts, DB path / size / dates, clear-skipped button |
+
+Keyboard shortcuts: **Ctrl+1–6** switch tabs · **Ctrl+F** focuses search. Dark/light theme toggle in the top bar.
+
 ## Rate limits (defaults)
 
 - 8 concurrent requests
@@ -71,7 +84,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools  # tick "Desktop developme
 
 # 2. open this folder in VS Code, open Copilot Chat
 # 3. paste the prompt from INIT.md
-# 4. wait. The agent does Steps 0–13 from MASTER_PLAN.md.
+# 4. wait. The agent does Steps 0–14 from MASTER_PLAN.md.
 ```
 
 ## License / etiquette
